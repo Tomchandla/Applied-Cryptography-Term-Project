@@ -1,7 +1,70 @@
 import math
 import hashlib
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List
+
+
+# ==============================
+# ADRS – address structure
+# ==============================
+
+class ADRS:
+    """
+    Placeholder for the 32-byte SPHINCS+ address structure (spec r3.1 §2.7.3).
+
+    Layout (8 × 32-bit words = 32 bytes):
+      word 0      : layer address
+      words 1-3   : tree address  (spec uses 3 words; simplified to 1 here)
+      word 4      : type
+      word 5      : key pair address
+      word 6      : chain address / tree height / padding
+      word 7      : hash address  / tree index  / padding
+
+    Per spec: setType() zeroes the subsequent three words.
+
+    TODO (integration): expand words 1-3 to the full 96-bit tree address
+    required by the SPHINCS+ hypertree (spec §2.7.3).
+    """
+
+    # Type constants (spec §2.7.3)
+    WOTS_HASH  = 0
+    WOTS_PK    = 1
+    TREE       = 2
+    FORS_TREE  = 3
+    FORS_ROOTS = 4
+    WOTS_PRF   = 5
+    FORS_PRF   = 6
+
+    def __init__(self):
+        self._words = [0] * 8  # 8 × 32-bit words
+
+    def copy(self) -> "ADRS":
+        a = ADRS()
+        a._words = self._words[:]
+        return a
+
+    # --- setters ---
+    def setLayerAddress(self, v: int):   self._words[0] = v
+    def setTreeAddress(self, v: int):    self._words[1] = v   # simplified: 1 word
+    def setType(self, v: int):
+        self._words[4] = v
+        self._words[5] = 0   # zero subsequent words per spec
+        self._words[6] = 0
+        self._words[7] = 0
+    def setKeyPairAddress(self, v: int): self._words[5] = v
+    def setChainAddress(self, v: int):   self._words[6] = v
+    def setHashAddress(self, v: int):    self._words[7] = v
+    def setTreeHeight(self, v: int):     self._words[6] = v
+    def setTreeIndex(self, v: int):      self._words[7] = v
+
+    # --- getters ---
+    def getKeyPairAddress(self) -> int:  return self._words[5]
+    def getTreeHeight(self) -> int:      return self._words[6]
+    def getTreeIndex(self) -> int:       return self._words[7]
+
+    def to_bytes(self) -> bytes:
+        return b"".join(w.to_bytes(4, "big") for w in self._words)
+
 
 # ==============================
 # SPHINCS+ parameter container
@@ -18,223 +81,265 @@ class SphincsParams:
     t: int = 0
 
     def __post_init__(self):
-        # Derived WOTS+ parameters per SPHINCS+ spec (r3.1).[web:12]
-        # len1 = ceil(8*n / log2(w))
+        # Derived WOTS+ parameters per SPHINCS+ spec (r3.1 §3.1).
+        # len1 = ceil(8n / lg(w))
         self.len1 = math.ceil(8 * self.n / math.log2(self.w))
-        # len2 = ceil(log2(len1 * (w-1)) / log2(w)) + 1
-        self.len2 = math.ceil(math.log2(self.len1 * (self.w - 1)) / math.log2(self.w)) + 1
-        # total length
-        self.len = self.len1 + self.len2
+        # len2 = floor(lg(len1*(w-1)) / lg(w)) + 1
+        self.len2 = math.floor(math.log2(self.len1 * (self.w - 1)) / math.log2(self.w)) + 1
+        # len  = len1 + len2
+        self.len  = self.len1 + self.len2
 
 
 # ==============================
-# Utility functions
+# Placeholder cryptographic primitives
 # ==============================
 
-def _to_base_w(x: bytes, w: int, out_len: int) -> List[int]:
+def PRF(SK_seed: bytes, ADRS_obj: ADRS, n: int) -> bytes:
     """
-    Convert a byte string x into base-w digits (big-endian),
-    as in the WOTS+ spec (r2.5).[web:7]
+    Placeholder for PRF(SK.seed, ADRS) → n bytes (spec r3.1 §2.7.2).
+    TODO (integration): replace with the keyed PRF from the chosen
+    SPHINCS+ instantiation (SHA-2 or SHAKE).
     """
-    total_bits = len(x) * 8
+    h = hashlib.sha256()
+    h.update(SK_seed)
+    h.update(ADRS_obj.to_bytes())
+    return h.digest()[:n]
+
+
+def F(PK_seed: bytes, ADRS_obj: ADRS, M: bytes, n: int) -> bytes:
+    """
+    Placeholder for F(PK.seed, ADRS, M) → n bytes (spec r3.1 §2.7.1).
+    F is defined as T_1, the single-input tweakable hash function.
+    TODO (integration): replace with the tweakable hash F from the chosen
+    SPHINCS+ instantiation (SHA-2 or SHAKE).
+    """
+    h = hashlib.sha256()
+    h.update(PK_seed)
+    h.update(ADRS_obj.to_bytes())
+    h.update(M)
+    return h.digest()[:n]
+
+
+def T_len(PK_seed: bytes, ADRS_obj: ADRS, tmp: List[bytes], n: int) -> bytes:
+    """
+    Placeholder for T_l(PK.seed, ADRS, tmp) → n bytes (spec r3.1 §2.7.1).
+    Compresses len n-byte chain ends into a single n-byte public key value.
+    TODO (integration): replace with the tweakable hash T_l from the chosen
+    SPHINCS+ instantiation (SHA-2 or SHAKE).
+    """
+    h = hashlib.sha256()
+    h.update(PK_seed)
+    h.update(ADRS_obj.to_bytes())
+    for block in tmp:
+        h.update(block)
+    return h.digest()[:n]
+
+
+# ==============================
+# Utility: base_w  (spec r3.1 §2.5, Algorithm 1)
+# ==============================
+
+def base_w(X: bytes, w: int, out_len: int) -> List[int]:
+    """
+    base_w(X, w, out_len) – convert byte string X into out_len base-w digits.
+    Spec requires out_len ≤ 8*len(X) / lg(w).
+    """
     log_w = int(math.log2(w))
     if 2 ** log_w != w:
         raise ValueError("w must be a power of 2")
 
-    bits = int.from_bytes(x, "big")
+    bits   = int.from_bytes(X, "big")
     digits = []
     for _ in range(out_len):
         digits.append(bits & (w - 1))
         bits >>= log_w
-    digits.reverse()  # big-endian ordering
+    digits.reverse()   # big-endian: most-significant digit first
     return digits
 
 
-def _compute_checksum(msg_base_w: List[int], w: int, len2: int) -> List[int]:
-    """
-    Compute WOTS+ checksum as in the spec (r3.5).[web:15]
-    """
-    csum = 0
-    for d in msg_base_w:
-        csum += (w - 1) - d
-
-    # Represent checksum in base w using len2 digits.
-    log_w = int(math.log2(w))
-    # csum = csum << ( 8 - ( ( len_2 * lg(w) ) % 8 ));
-    csum_bits = csum << (len2 * log_w - csum.bit_length())
-    # len_2_bytes = ceil( ( len_2 * lg(w) ) / 8 );
-    # csum_bytes = toByte(csum, len_2_bytes)
-    csum_bytes = csum_bits.to_bytes((len2 * log_w + 7) // 8, "big")
-    return _to_base_w(csum_bytes, w, len2)
-
-
-def _tweakable_hash(x: bytes, addr: bytes, n: int) -> bytes:
-    """
-    Very simplified stand-in for the SPHINCS+ tweakable hash function thash.
-    In the real implementation, this will depend on PK.seed and ADRS.[web:29]
-
-    TODO (integration): replace with F(PK.seed, ADRS, x) spec (r2.7.1) [web:9]. PK.seed and the structured 32-byte
-    ADRS object will be supplied by the enclosing SPHINCS+ context.
-    """
-    h = hashlib.sha256()
-    # Concatenate address and input; treat addr as a tweak
-    h.update(addr)
-    h.update(x)
-    out = h.digest()
-    if len(out) < n:
-        raise ValueError("Hash output shorter than n")
-    return out[:n]
-
-
-def chain(x: bytes, start: int, steps: int, addr: bytes, n: int, w: int) -> bytes:
-    """
-    WOTS+ chaining function: iteratively apply F starting from x,
-    from step 'start' for 'steps' iterations.[web:13]
-    Here F is instantiated via _tweakable_hash with (addr || step).
-
-    TODO (integration): addr should be a structured 32-byte ADRS object.
-    Each iteration should call ADRS.setHashAddress(i) then F(PK.seed, ADRS, x) spec (r3.2) [web:13].
-    """
-    assert len(x) == n
-    if (start + steps) > (w - 1):
-        raise ValueError("chain: start + steps exceeds w-1")
-
-    if steps == 0:
-        return x
-    for i in range(start, start + steps):
-        # incorporate step into address (again, very simplified)
-        step_addr = addr + i.to_bytes(4, "big")
-        x = _tweakable_hash(x, step_addr, n)
-    return x
-
-
 # ==============================
-# WOTS+ implementation
+# WOTS+ implementation  (spec r3.1 §3)
 # ==============================
 
 class WOTSPlus:
+
     def __init__(self, params: SphincsParams):
         self.params = params
 
-    # ---- Key generation ----
+    # ------------------------------------------------------------------
+    # Algorithm 2: chain(X, i, s, PK.seed, ADRS)  (spec r3.1 §3.2)
+    # ------------------------------------------------------------------
 
-    def sk_gen(self, sk_seed: bytes, addr: bytes) -> List[bytes]:
+    def chain(self, X: bytes, i: int, s: int,
+              PK_seed: bytes, ADRS_obj: ADRS) -> bytes:
         """
-        Generate WOTS+ secret key as len n-byte strings.[web:14]
-        In the real spec, each sk element is PRF(SK.seed, ADRS || i).[web:31]
-        Here I simplify with H(sk_seed || i || addr) as FORS is not implemented yet.
-
-        TODO (integration): replace with PRF(SK.seed, ADRS) where
-        ADRS.setChainAddress(i) is called before each invocation spec (r3.3) [web:14]
-        addr here is a flat-byte placeholder for the structured 32-byte ADRS object.
-        """
-        n = self.params.n
-        sk = []
-        for i in range(self.params.len):
-            h = hashlib.sha256()
-            h.update(sk_seed)
-            h.update(i.to_bytes(4, "big"))
-            h.update(addr)
-            sk_i = h.digest()[:n]
-            sk.append(sk_i)
-        return sk
-
-    def pk_gen(self, sk: List[bytes], addr: bytes) -> List[bytes]:
-        """
-        Generate WOTS+ public key as len n-byte strings.
-        Each pk[i] = chain(sk[i], 0, w-1, addr, n, w).[web:29]
-
-        TODO (integration): two changes required spec (r3.5) [web:14]:
-        1. sk should be derived internally via PRF(SK.seed, ADRS) rather than
-           passed in — sk_gen and pk_gen should be merged into wots_PKgen.
-        2. After computing all chain ends, compress into a single n-byte public
-           key via T_len(PK.seed, wotspkADRS, tmp) where wotspkADRS has type
-           WOTS_PK. Currently returns a list of len values as a placeholder.
+        Chaining function: iterate F s times on X starting from position i.
+        Returns NULL (raises) if i + s > w - 1.
         """
         n = self.params.n
         w = self.params.w
-        pk = []
-        for i, sk_i in enumerate(sk):
-            # chain address tweak could incorporate i; simplified here
-            chain_addr = addr + i.to_bytes(4, "big")
-            pk_i = chain(sk_i, 0, w - 1, chain_addr, n, w)
-            pk.append(pk_i)
-        return pk
 
-    def keygen(self, sk_seed: bytes, addr: bytes) -> Tuple[List[bytes], List[bytes]]:
-        """
-        Convenience: generate (sk, pk) pair.
-        """
-        sk = self.sk_gen(sk_seed, addr)
-        pk = self.pk_gen(sk, addr)
-        return sk, pk
+        if s == 0:
+            return X
+        if (i + s) > (w - 1):
+            raise ValueError("chain: i + s exceeds w - 1")
 
-    # ---- Signing ----
+        tmp = self.chain(X, i, s - 1, PK_seed, ADRS_obj)
+        ADRS_obj.setHashAddress(i + s - 1)
+        tmp = F(PK_seed, ADRS_obj, tmp, n)
+        return tmp
 
-    def _msg_to_chain_lengths(self, msg_digest: bytes) -> List[int]:
-        """
-        Map a message digest to WOTS+ chain lengths:
-          - convert digest to base-w (len1 digits)
-          - compute checksum (len2 digits)
-          - return concatenation of both.[web:15]
-        """
-        p = self.params
-        # base-w representation of message digest
-        msg_base_w = _to_base_w(msg_digest, p.w, p.len1)
-        # checksum digits
-        csum_digits = _compute_checksum(msg_base_w, p.w, p.len2)
-        # msg = msg || base_w(toByte(csum, len_2_bytes), w, len_2);
-        return msg_base_w + csum_digits  # length len1 + len2 = len
+    # ------------------------------------------------------------------
+    # Algorithm 3: wots_SKgen(SK.seed, ADRS)  (spec r3.1 §3.3)
+    # ------------------------------------------------------------------
 
-    def sign(self, sk: List[bytes], msg_digest: bytes, addr: bytes) -> List[bytes]:
+    def wots_SKgen(self, SK_seed: bytes, ADRS_obj: ADRS) -> List[bytes]:
         """
-        Generate WOTS+ signature:
-          - derive chain lengths a[i] from message digest
-          - sig[i] = chain(sk[i], 0, a[i], addr_i).[web:29]
+        Generate the WOTS+ secret key (len n-byte strings).
+        Each sk[i] = PRF(SK.seed, skADRS) where skADRS has type WOTS_PRF.
         """
         n = self.params.n
-        assert len(msg_digest) == n, "msg_digest must be n bytes"
-        assert len(sk) == self.params.len
 
-        a = self._msg_to_chain_lengths(msg_digest)
+        skADRS = ADRS_obj.copy()
+        skADRS.setType(ADRS.WOTS_PRF)
+        skADRS.setKeyPairAddress(ADRS_obj.getKeyPairAddress())
+
+        sk = []
+        for i in range(self.params.len):
+            skADRS.setChainAddress(i)
+            skADRS.setHashAddress(0)
+            sk.append(PRF(SK_seed, skADRS, n))
+        return sk
+
+    # ------------------------------------------------------------------
+    # Algorithm 4: wots_PKgen(SK.seed, PK.seed, ADRS)  (spec r3.1 §3.4)
+    # ------------------------------------------------------------------
+
+    def wots_PKgen(self, SK_seed: bytes, PK_seed: bytes,
+                   ADRS_obj: ADRS) -> bytes:
+        """
+        Generate the WOTS+ public key.
+        Derives sk internally; compresses all chain ends via T_len.
+        Returns a single n-byte public key value.
+        """
+        n = self.params.n
+        w = self.params.w
+
+        wotspkADRS = ADRS_obj.copy()
+        skADRS     = ADRS_obj.copy()
+        skADRS.setType(ADRS.WOTS_PRF)
+        skADRS.setKeyPairAddress(ADRS_obj.getKeyPairAddress())
+
+        tmp = []
+        for i in range(self.params.len):
+            skADRS.setChainAddress(i)
+            skADRS.setHashAddress(0)
+            sk_i = PRF(SK_seed, skADRS, n)
+
+            ADRS_obj.setChainAddress(i)
+            ADRS_obj.setHashAddress(0)
+            tmp.append(self.chain(sk_i, 0, w - 1, PK_seed, ADRS_obj))
+
+        wotspkADRS.setType(ADRS.WOTS_PK)
+        wotspkADRS.setKeyPairAddress(ADRS_obj.getKeyPairAddress())
+        return T_len(PK_seed, wotspkADRS, tmp, n)
+
+    # ------------------------------------------------------------------
+    # Algorithm 5: wots_sign(M, SK.seed, PK.seed, ADRS)  (spec r3.1 §3.5)
+    # ------------------------------------------------------------------
+
+    def wots_sign(self, M: bytes, SK_seed: bytes, PK_seed: bytes,
+                  ADRS_obj: ADRS) -> List[bytes]:
+        """
+        Generate a WOTS+ signature on message digest M.
+        Returns a list of len n-byte signature elements.
+        """
+        n   = self.params.n
+        w   = self.params.w
+        p   = self.params
+
+        assert len(M) == n, "M must be n bytes"
+
+        # convert message to base w
+        msg = base_w(M, w, p.len1)
+
+        # compute checksum
+        csum = sum((w - 1) - m for m in msg)
+
+        # convert checksum to base w  (spec r3.1 §3.5)
+        log_w = int(math.log2(w))
+        if log_w % 8 != 0:
+            csum = csum << (8 - (p.len2 * log_w) % 8)
+        len2_bytes = math.ceil(p.len2 * log_w / 8)
+        msg = msg + base_w(csum.to_bytes(len2_bytes, "big"), w, p.len2)
+
+        # build signature
+        skADRS = ADRS_obj.copy()
+        skADRS.setType(ADRS.WOTS_PRF)
+        skADRS.setKeyPairAddress(ADRS_obj.getKeyPairAddress())
+
         sig = []
-        for i, (sk_i, steps) in enumerate(zip(sk, a)):
-            chain_addr = addr + i.to_bytes(4, "big")
-            sig_i = chain(sk_i, 0, steps, chain_addr, n, self.params.w)
-            sig.append(sig_i)
+        for i in range(p.len):
+            skADRS.setChainAddress(i)
+            skADRS.setHashAddress(0)
+            sk = PRF(SK_seed, skADRS, n)
+
+            ADRS_obj.setChainAddress(i)
+            ADRS_obj.setHashAddress(0)
+            sig.append(self.chain(sk, 0, msg[i], PK_seed, ADRS_obj))
         return sig
 
-    # ---- Public key from signature (for verification) ----
+    # ------------------------------------------------------------------
+    # Algorithm 6: wots_pkFromSig(sig, M, PK.seed, ADRS)  (spec r3.1 §3.6)
+    # ------------------------------------------------------------------
 
-    def pk_from_sig(self, sig: List[bytes], msg_digest: bytes, addr: bytes) -> List[bytes]:
+    def wots_pkFromSig(self, sig: List[bytes], M: bytes,
+                       PK_seed: bytes, ADRS_obj: ADRS) -> bytes:
         """
-        Reconstruct WOTS+ public key from signature and message digest:
-          - derive chain lengths a[i]
-          - pk[i] = chain(sig[i], a[i], w-1-a[i], addr_i).[web:29]
+        Reconstruct the WOTS+ public key from a signature and message digest.
+        Returns a single n-byte value (to be compared against wots_PKgen output).
         """
         n = self.params.n
-        assert len(msg_digest) == n
-        assert len(sig) == self.params.len
+        w = self.params.w
+        p = self.params
 
-        a = self._msg_to_chain_lengths(msg_digest)
-        pk = []
-        for i, (sig_i, steps) in enumerate(zip(sig, a)):
-            chain_addr = addr + i.to_bytes(4, "big")
-            pk_i = chain(sig_i, steps, self.params.w - 1 - steps, chain_addr, n, self.params.w)
-            pk.append(pk_i)
-        return pk
+        assert len(M)   == n,      "M must be n bytes"
+        assert len(sig) == p.len,  "sig must have len elements"
+
+        wotspkADRS = ADRS_obj.copy()
+
+        # convert message to base w
+        msg = base_w(M, w, p.len1)
+
+        # compute checksum
+        csum = sum((w - 1) - m for m in msg)
+
+        # convert checksum to base w  (spec r3.1 §3.6)
+        log_w = int(math.log2(w))
+        if log_w % 8 != 0:
+            csum = csum << (8 - (p.len2 * log_w) % 8)
+        len2_bytes = math.ceil(p.len2 * log_w / 8)
+        msg = msg + base_w(csum.to_bytes(len2_bytes, "big"), w, p.len2)
+
+        tmp = []
+        for i in range(p.len):
+            ADRS_obj.setChainAddress(i)
+            tmp.append(self.chain(sig[i], msg[i], w - 1 - msg[i], PK_seed, ADRS_obj))
+
+        wotspkADRS.setType(ADRS.WOTS_PK)
+        wotspkADRS.setKeyPairAddress(ADRS_obj.getKeyPairAddress())
+        return T_len(PK_seed, wotspkADRS, tmp, n)
 
 
 # ==============================
-# Example usage / quick test
+# Quick self-test
 # ==============================
 
 if __name__ == "__main__":
-    # Example placeholder parameters (like 128-bit security)
     params = SphincsParams(
-        n=16,   # 128-bit security parameter, placeholder
-        w=16,   # Winternitz parameter (must be power of 2 in this simplified base_w)
-        h=60,   # placeholders for later SPHINCS+ integration
+        n=16,        # 128-bit security parameter, placeholder
+        w=16,        # Winternitz parameter
+        h=60,        # placeholders for later SPHINCS+ integration
         d=12,
         k=15,
         t=2 ** 15,
@@ -242,18 +347,18 @@ if __name__ == "__main__":
 
     wots = WOTSPlus(params)
 
-    sk_seed = b"this_is_a_demo_seed_for_wots"  # placeholder; later, use random n-byte seed
-    addr = b"WOTSADDR"  # placeholder; later, use real ADRS structure
+    SK_seed = b"demo_secret_seed_16b"[:params.n]   # placeholder; use os.urandom(n) in production
+    PK_seed = b"demo_public_seed_16b"[:params.n]   # placeholder; use os.urandom(n) in production
 
-    # Generate key pair
-    sk, pk = wots.keygen(sk_seed, addr)
+    # Generate public key
+    pk = wots.wots_PKgen(SK_seed, PK_seed, ADRS())
 
     # Sign a dummy n-byte digest
-    msg_digest = hashlib.sha256(b"wtf").digest()[:params.n]
-    sig = wots.sign(sk, msg_digest, addr)
+    M = hashlib.sha256(b"hello wtf").digest()[:params.n]
+    sig = wots.wots_sign(M, SK_seed, PK_seed, ADRS())
 
-    # Recompute pk from signature + message
-    pk2 = wots.pk_from_sig(sig, msg_digest, addr)
+    # Reconstruct public key from signature
+    pk2 = wots.wots_pkFromSig(sig, M, PK_seed, ADRS())
 
     assert pk == pk2, "WOTS+ verification failed: pk mismatch"
     print("WOTS+ self-test passed.")
