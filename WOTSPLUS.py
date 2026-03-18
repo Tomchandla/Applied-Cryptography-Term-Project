@@ -73,7 +73,7 @@ class ADRS:
 @dataclass
 class SphincsParams:
     n: int  # security parameter (bytes)
-    w: int  # Winternitz parameter
+    w: int  # Winternitz parameter — must be 4, 16, or 256 (spec r3.1 §3.1)
     # placeholders – not used in WOTS+
     h: int = 0
     d: int = 0
