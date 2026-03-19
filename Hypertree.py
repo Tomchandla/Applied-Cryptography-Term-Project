@@ -73,6 +73,12 @@ class Hypertree:
             sig: bytes
             auth: List[bytes]
 
+            def get_sig(self) -> bytes:
+                return self.sig
+            
+            def get_auth(self) -> List[bytes]:
+                return self.auth;
+
         """
             XMSS signature generator with variables:
             M - n-byte message
@@ -92,9 +98,26 @@ class Hypertree:
             sig = self.WOTSPlus.sign(self.WOTSPlus, M, sk_seed, adrs)
             return sig + b''.join(AUTH)
         
-        def xmss_pkFromSig(idx: int, sig:bytes, M: bytes, pk_seed: bytes, adrs: ADRS) -> bytes:
+        def xmss_pkFromSig(self, idx: int, sig:xmss_sig, M: bytes, pk_seed: bytes, adrs: ADRS) -> bytes:
             adrs.set_type(ADRSType.WOTS_HASH)
             adrs.set_key_pair_add(idx)
+            sig = sig.get_sig()
+            AUTH = sig.get_auth()
+            node = self.WOTSPlus.pkfromsig(self.WOTSPlus, sig, M, pk_seed, adrs)
+
+            adrs.set_type(ADRSType.TREE)
+            adrs.set_tree_index(idx)
+            for k in self.h:
+                adrs.set_tree_height(k + 1)
+                if ( (math.floor(idx/ pow(2,k)) % 2) == 0):
+                    #TODO replace H with hash function.
+                    adrs.set_tree_index((adrs.get_tree_index() / 2))
+                    node = self.H(pk_seed, adrs, node[0] + AUTH[k])
+                else:
+                    adrs.set_tree_index((adrs.get_tree_index() - 1) / 2)
+                    node = self.H(pk_seed, adrs, AUTH[k] + node[0])
+            return node
+            
             
             
 
