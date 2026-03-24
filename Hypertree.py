@@ -1,125 +1,81 @@
 import math
 import hashlib
 import ctypes
+from xmlrpc.client import Boolean
 from ADRS import ADRSType, ADRS
 from typing import List, Tuple
 from WOTSPLUS import WOTSPlus, SphincsParams
+from XMSS import XMSS
+from helpers import toByte
+from Hypertree_sig import hypertree_sig
+from XMSS_sig import xmss_sig
 
 #===============
 # SPHINCS+ Hypertree Implementtion
 #==============
 class Hypertree:
     # A hypertree is a form of XMSS, as such it uses some of the functions it does.
+    # In addition to all XMSS parameters, it also has a normal h representing tree height
+    # and number of tree layers d. The same tree height h/d = h' and winternitz param
+    # is used for all layers
+    h: int # height of tree
+    d: int # number of tree layers
+    w: int # winternitz param
+    n: int # length in bytes to be passed unto the XMSS constructo
     wots_plus = WOTSPlus();
+    adrs = ADRS();
+    XMSS = XMSS(h, n, d, w, wots_plus, ADRS);
     def __init__(self):
         self.wots_plus = WOTSPlus(SphincsParams)
-    class XMSS:
-        h: int # height of the tree (number of levels - 1) (supposed to be h')
-        n: int # the length in bytes of messages as well as of each node.
-        w: int # the Winternitz parameter
-        # some leaves parameter which is defined as 2^h
+        self.ADRS = ADRS()
+        self.XMSS = XMSS(self.h, self.n, self.d, self.w, self.wots_plus, self.ADRS)
+
+    """
+    Hypertree public key generator
+    The public key generation takes as input a private and public seed
+    and outputs its own seed.
+    """
+    def ht_PkGen(self, sk_seed:bytes, pk_seed:bytes) -> bytes:
+        self.adrs = toByte(0, 32)
+        self.adrs.setlayer(self.d - 1)
+        self.adrs.set_tree_add(0)
+        root = self.XMSS.xmss_PKgen(sk_seed, pk_seed, self.adrs)
+        return root;
 
 
-        """
-            Tree hash function
-            sk_seed = secret key seed
-            pk_seed = public key seed
-            s = start index (unsigned integer)
-            z = end idnex (unsigned int)
-            ADDR = address.
-        """
-        def _TreeHash(self, sk_seed: bytes, s: int, z:int, pk_seed:bytes, adrs: ADRS) -> bytes:
-            # ensure s and z are unsigned integers.
-            if (s  < 0 or z < 0):
-                raise ValueError(f"{s} or/and {z} must be a positive integer value to be put into a word")
-            if (s > 0xFFFFFFFF or z > 0xFFFFFFFF):
-                raise ValueError(f"Values {s} or/and {z} exceeds 32 bit limit")
-            
-            if (s % (1 <<z) != 0): return 1;
-            # list impl of stack
-            stack = []
-
-            for i in range(pow(2, z)):
-                adrs.set_type(ADRSType.WOTS_HASH)
-                adrs.set_key_pair_add(s + i)
-                # TODO: wots pkgen is incomplete so this is basically equiv to a stub right now.
-                node = self.WOTSPlus.pk_gen(self.WOTSPlus, sk_seed, adrs)
-                adrs.set_type(ADRSType.TREE)
-                adrs.set_tree_height(1)
-                adrs.set_tree_add(s + i)
-                while stack and stack[-1][1] == height:
-                    adrs.set_tree_index((adrs.get_tree_index-1) / 2);
-                    # TODO should be a hash func here.
-                    node = self.H(pk_seed, adrs, (stack.pop()[0] + node))
-                    height += 1
-                    adrs.set_tree_height(height)
-                # mimic stack push
-                stack.append((node, height))
-            return stack.pop()[0]
+    def ht_sign(self, M:bytes, sk_seed: bytes, pk_seed: bytes, tree_index: int, leaf_index: int) -> hypertree_sig:
+        self.adrs = toByte(0, 32)
+        self.adrs.set_layer_add(0)
+        self.adrs.set_tree_add(tree_index)
+        SIG_tmp = self.XMSS.xmss_sign(M, sk_seed, leaf_index, pk_seed, self.adrs)
+        SIG_HT = List[xmss_sig]();
+        root = self.XMSS.xmss_pkFromSig(leaf_index, SIG_tmp, M, pk_seed, self.adrs)
+        for i in range(1, self.d):
+            leaf_index = self.h / self.d # least sig bits of tree index.
+            tree_index = (self.h - (self.j +1) * (self.h/ self.d)) # most sig bits of tree
+            self.adrs.set_layer_add(i)
+            self.adrs.set_tree_add(tree_index)
+            SIG_tmp = self.XMSS.xmss_sign(root, sk_seed, leaf_index, pk_seed, self.adrs)
+            SIG_HT.append(SIG_tmp)
+            if (i < self.d - 1):
+                root = self.XMSS.xmss_pkFromSig(leaf_index, SIG_tmp, root, pk_seed, self.adrs)
         
-        """
-        xmss public key generator 
-        """
-        def xmss_PKgen(self, sk_seed: bytes, pk_seed: bytes, adrs: ADRS) -> bytes:
-            pk = self.TreeHash(sk_seed, 0, self.h, pk_seed, adrs)
-            return pk;
-        """
-        An XMSS signature is a ((len + h') * n)-byte signature consisting of:
-        A WOTS+ signature sig taking len * n bytes
-        The authentication path AUTH for the leaf associated with the used WOTS+ key pair taking h' * n bytes
-        Auth path - array of h' n-byte strings ontains the siblings of the nodes in on the path from the used leaf to the root
-        """
-        class xmss_sig:
-            sig: bytes
-            auth: List[bytes]
-
-            def get_sig(self) -> bytes:
-                return self.sig
-            
-            def get_auth(self) -> List[bytes]:
-                return self.auth;
-
-        """
-            XMSS signature generator with variables:
-            M - n-byte message
-            sk seed - secret key seed
-            index - index number.
-            pk seed - public key seed
-            adrs - address
-        """
-        def xmss_sign(self, M:bytes, sk_seed: bytes, idx: int, pk_seed: bytes, adrs: ADRS) -> xmss_sig:
-            AUTH = []
-            for j in self.h:
-                k = math.floor(idx / (pow(2,j))) ^ 1
-                AUTH[j] = self._TreeHash(sk_seed, k * pow(2,j), j, pk_seed, adrs)
-            
-            adrs.set_type(ADRSType.WOTS_HASH)
-            adrs.set_key_pair_add(idx)
-            sig = self.WOTSPlus.sign(self.WOTSPlus, M, sk_seed, adrs)
-            return sig + b''.join(AUTH)
-        
-        def xmss_pkFromSig(self, idx: int, sig:xmss_sig, M: bytes, pk_seed: bytes, adrs: ADRS) -> bytes:
-            adrs.set_type(ADRSType.WOTS_HASH)
-            adrs.set_key_pair_add(idx)
-            sig = sig.get_sig()
-            AUTH = sig.get_auth()
-            node = self.WOTSPlus.pkfromsig(self.WOTSPlus, sig, M, pk_seed, adrs)
-
-            adrs.set_type(ADRSType.TREE)
-            adrs.set_tree_index(idx)
-            for k in self.h:
-                adrs.set_tree_height(k + 1)
-                if ( (math.floor(idx/ pow(2,k)) % 2) == 0):
-                    #TODO replace H with hash function.
-                    adrs.set_tree_index((adrs.get_tree_index() / 2))
-                    node = self.H(pk_seed, adrs, node[0] + AUTH[k])
-                else:
-                    adrs.set_tree_index((adrs.get_tree_index() - 1) / 2)
-                    node = self.H(pk_seed, adrs, AUTH[k] + node[0])
-            return node
-            
-            
-            
-
-
+        return hypertree_sig(SIG_HT)
     
+    def ht_verify(self, M: bytes, SIG_HT: hypertree_sig, pk_seed: bytes, tree_index: int, leaf_index: int, pk_ht: bytes) -> Boolean:
+        self.adrs = toByte(0, 32)
+        SIG_TMP = SIG_HT.get_xmss_sigs(0)
+        self.adrs.set_layer_add(0)
+        self.adrs.set_tree_add(tree_index)
+        node = self.XMSS.xmss_pkFromSig(leaf_index, SIG_TMP,M, pk_seed, self.adrs)
+        for i in range(1, self.d):
+            leaf_index = self.h / self.d # least sig bits of tree index.
+            tree_index = (self.h - (self.j +1) * (self.h/ self.d)) # most sig bits of tree
+            SIG_TMP = SIG_HT.get_xmss_sigs(i)
+            self.adrs.set_layer_add(i)
+            self.adrs.set_treE_add(tree_index)
+            node = self.XMSS.xmss_pkFromSig(leaf_index, SIG_TMP, node, pk_seed, self.adrs)
+        if (node == pk_ht):
+            return True
+        else:
+            return False
