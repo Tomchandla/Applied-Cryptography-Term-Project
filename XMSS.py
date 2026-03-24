@@ -2,6 +2,7 @@ import math
 from ADRS import ADRSType, ADRS
 from WOTSPLUS import WOTSPlus
 from XMSS_sig import xmss_sig
+from helpers import hash_func
 
 class XMSS:
         xmss_h: int # height of the tree (number of levels - 1) (h')
@@ -39,15 +40,13 @@ class XMSS:
             for i in range(pow(2, z)):
                 adrs.set_type(ADRSType.WOTS_HASH)
                 adrs.set_key_pair_add(s + i)
-                # TODO: wots pkgen is incomplete so this is basically equiv to a stub right now.
                 node = self.WOTSPlus.pk_gen(self.WOTSPlus, sk_seed, adrs)
                 adrs.set_type(ADRSType.TREE)
                 adrs.set_tree_height(1)
                 adrs.set_tree_add(s + i)
                 while stack and stack[-1][1] == height:
                     adrs.set_tree_index((adrs.get_tree_index-1) / 2);
-                    # TODO should be a hash func here.
-                    node = self.H(pk_seed, adrs, (stack.pop()[0] + node))
+                    node = hash_func(pk_seed, adrs, (stack.pop()[0] + node))
                     height += 1
                     adrs.set_tree_height(height)
                 # mimic stack push
@@ -91,10 +90,9 @@ class XMSS:
             for k in self.h:
                 adrs.set_tree_height(k + 1)
                 if ( (math.floor(idx/ pow(2,k)) % 2) == 0):
-                    #TODO replace H with hash function.
                     adrs.set_tree_index((adrs.get_tree_index() / 2))
-                    node = self.H(pk_seed, adrs, node[0] + AUTH[k])
+                    node = hash_func(pk_seed, adrs, node[0] + AUTH[k])
                 else:
                     adrs.set_tree_index((adrs.get_tree_index() - 1) / 2)
-                    node = self.H(pk_seed, adrs, AUTH[k] + node[0])
+                    node = hash_func(pk_seed, adrs, AUTH[k] + node[0])
             return node
