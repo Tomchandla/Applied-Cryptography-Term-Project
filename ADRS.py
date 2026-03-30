@@ -1,5 +1,4 @@
 from enum import IntEnum
-import ctypes as ctypes
 import struct
 
 # ======================
@@ -33,7 +32,7 @@ class ADRS:
     # as well as dictate the purpose of this specific ADRS instance.
     def __init__(self):
         # index words to make life easier
-        self._words = [0] * 8 # 8 words, 1 word is 4 bytes, stored in big-endian.
+        self.words = [0] * 8 # 8 words, 1 word is 4 bytes, stored in big-endian.
         pass
     
     # getter functions
@@ -52,92 +51,95 @@ class ADRS:
             raise ValueError(f"{value} must be a positive integer value to be put into a word")
         if (value > 0xFFFFFFFF):
             raise ValueError(f"Value {value} exceeds 32 bit limit")
-        self._words[index] = value
+        self.words[index] = value
     
     def set_layer_add(self, layer: int) -> None:
-        self._set_word(0, layer)
+        self.set_word(0, layer)
 
     def set_tree_add(self, tree: int) -> None:
         # Tree address spans words 1-3 (96 bits, big-endian).
         tree = tree & 0xFFFFFFFFFFFFFFFFFFFFFFFF  # clamp to 96 bits
         # self-explanatory, we get to the specific word and then clamp it to be 32 bits
-        self._set_word(1, (tree >> 64) & 0xFFFFFFFF) 
-        self._set_word(2, (tree >> 32) & 0xFFFFFFFF)
-        self._set_word(3,  tree        & 0xFFFFFFFF)
+        self.set_word(1, (tree >> 64) & 0xFFFFFFFF) 
+        self.set_word(2, (tree >> 32) & 0xFFFFFFFF)
+        self.set_word(3,  tree        & 0xFFFFFFFF)
     
     # 
     def set_type(self, adrs_type:ADRSType) -> None:
-        self._set_word(4, ADRSType)
-        self._set_word(5, 0)
-        self._set_word(6, 0)
-        self._set_word(7, 0)
+        self.set_word(4, int(adrs_type))
+        self.set_word(5, 0)
+        self.set_word(6, 0)
+        self.set_word(7, 0)
 
     # ===============
     # Type Specific
     # ===============
 
     def set_key_pair_add(self, kpa:int) -> None:
-        self._set_word(5, kpa)
+        self.set_word(5, kpa)
 
     def set_chain_add(self, ch_add:int) -> None:
-        self._set_word(6, ch_add)
+        self.set_word(6, ch_add)
     
     # As a convention, this is 0 for all WOTS_
     def set_hash_add(self, ha_add:int) -> None:
-        self._set_word(7, ha_add)
+        self.set_word(7, ha_add)
     
     # As a convention, this is 0 for all FORS_PRF
     def set_tree_height(self, tree_h:int) -> None:
-        self._set_word(6, tree_h)
+        self.set_word(6, tree_h)
 
     def set_tree_index(self, tree_i:int) -> None:
-        self._set_word(7, tree_i)
+        self.set_word(7, tree_i)
 
     # ==========
     # Type-specific Getters - should not be called wrongly in the correct impl anw.
     # ==========
 
     def get_hash_add(self) -> int:
-        return self._get_word(7)
+        return self.get_word(7)
 
     def get_chain_add(self) -> int:
-        return self._get_word(6)
+        return self.get_word(6)
 
     def get_key_pair_add(self) -> int:
-        return self._get_word(5)
+        return self.get_word(5)
 
     def get_tree_height(self) -> int:
-        return self._get_word(6)
+        return self.get_word(6)
 
     def get_tree_index(self) -> int:
-        return self._get_word(7)
+        return self.get_word(7)
 
     # ==========
     # Serialisation - following the spec, we want everything encoded into 32 bytes.
     # ==========
-    @ classmethod
     def to_bytes(self) -> bytes:
         # big-endian 8 unsigned integers following the schema.    
-        return struct.pack(">8I", *self._words)
+        return struct.pack(">8I", *self.words)
 
-    @ classmethod
     def from_bytes(cls, data:bytes) -> "ADRS":
         if (len(data)!= cls.size):
             raise ValueError(f"ADRS must be {cls.size} bytes, received {len(data)} instead.")
         adrs = cls()
-        adrs._words = list(struct.unpack(">8I", data))
+        adrs.words = list(struct.unpack(">8I", data))
         return adrs
     
     # Debugging print statement
-    def __print__(self) -> str:
+    def __repr__(self) -> str:
         return (
-            f"ADRS_layer_Add: {self._words[0]}",
-            f"tree = {self._words[1]}, {self._words[2]}, {self._words[3]}" 
-            f"type = {ADRSType(self._words[4].name)},"
-            f"word 5 = {self._words[5]}"
-            f"word 6 = {self._words[6]}"
-            f"word 7 = {self._words[7]}")
-
+            f"ADRS(layer={self.words[0]}, "
+            f"tree={self.words[1:4]}, "
+            f"type={self.words[4]}, "
+            f"words5-7={self.words[5:8]})"
+        )
+    
+    # helper function to allow for copying of ADRS instance
+    # prevents unwanted mutability.
+    def copy(self) -> "ADRS":
+        new = ADRS()
+        new.words = self.words[:]
+        return new
 
     
 
@@ -147,6 +149,6 @@ class ADRS:
 of addresses we use set methods that take positive integers and set the bits of a field to the
 binary representation of that integer, in big-endian notation. Throughout this document, we
 adhere to the convention of assuming that changing the type word of an address (indicated
-by the use of the setType() method) initializes the subsequent three words to zero.
+by the use of the set_type() method) initializes the subsequent three words to zero.
 """
 

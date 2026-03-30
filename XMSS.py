@@ -2,7 +2,7 @@ import math
 from ADRS import ADRSType, ADRS
 from WOTSPLUS import WOTSPlus
 from XMSS_sig import xmss_sig
-from helpers import hash_func
+from helpers import H
 
 class XMSS:
         xmss_h: int # height of the tree (number of levels - 1) (h')
@@ -43,14 +43,14 @@ class XMSS:
             for i in range(pow(2, z)):
                 adrs.set_type(ADRSType.WOTS_HASH)
                 adrs.set_key_pair_add(s + i)
-                node = self.wots_plus.pk_gen(self.wots_plus, sk_seed, adrs)
+                node = self.wots_plus.wots_PKgen(sk_seed, pk_seed, adrs)
                 adrs.set_type(ADRSType.TREE)
                 adrs.set_tree_height(1)
                 height = 1
-                adrs.set_tree_add(s + i)
+                adrs.set_tree_index(s + i)
                 while stack and stack[-1][1] == height:
                     adrs.set_tree_index((adrs.get_tree_index() - 1) // 2)
-                    node = hash_func(pk_seed, adrs, (stack.pop()[0] + node))
+                    node = H(pk_seed, adrs, (stack.pop()[0]), node, self.n)
                     height += 1
                     adrs.set_tree_height(height)
                 # mimic stack push
@@ -79,7 +79,7 @@ class XMSS:
             
             adrs.set_type(ADRSType.WOTS_HASH)
             adrs.set_key_pair_add(idx)
-            sig = self.wots_plus.sign(self.wots_plus, M, sk_seed, adrs)
+            sig = self.wots_plus.wots_sign(M, sk_seed, pk_seed, adrs)
             return xmss_sig(sig, AUTH)
         
         def xmss_pkFromSig(self, idx: int, sig:xmss_sig, M: bytes, pk_seed: bytes, adrs: ADRS) -> bytes:
@@ -88,7 +88,7 @@ class XMSS:
             # get components of the xmss_sig sig
             AUTH = sig.get_auth()
             sig = sig.get_sig()
-            node = self.wots_plus.pkfromsig(self.wots_plus, sig, M, pk_seed, adrs)
+            node = self.wots_plus.wots_pkFromSig(sig, M, pk_seed, adrs)
 
             adrs.set_type(ADRSType.TREE)
             adrs.set_tree_index(idx)
@@ -96,8 +96,8 @@ class XMSS:
                 adrs.set_tree_height(k + 1)
                 if ( (math.floor(idx/ pow(2,k)) % 2) == 0):
                     adrs.set_tree_index((adrs.get_tree_index() // 2))
-                    node = hash_func(pk_seed, adrs, node + AUTH[k])
+                    node = H(pk_seed, adrs, node, AUTH[k], self.n)
                 else:
                     adrs.set_tree_index((adrs.get_tree_index() - 1) // 2)
-                    node = hash_func(pk_seed, adrs, AUTH[k] + node)
+                    node = H(pk_seed, adrs, AUTH[k], node, self.n)
             return node

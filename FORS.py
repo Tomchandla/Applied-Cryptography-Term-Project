@@ -1,10 +1,7 @@
-import copy
 from math import log
-from typing import List
 
 from ADRS import ADRS, ADRSType
-from WOTSPLUS import PRF, F, T_len
-from helpers import hash_func
+from helpers import H, F, PRF, T_len
 from FORS_sig import FORS_sig
 
 class FORS:
@@ -16,6 +13,7 @@ class FORS:
     # input string is also split into bit strings of length a.
     # all inputs to FORS are bit strings of length k log t.
     adrs: ADRS
+    a: int # bonus param log base 2 of t for ease of use.
     def __init__(self, n: int, k: int, t: int, adrs: ADRS):
         if (n <= 0 or k <= 0 or t <= 0):
             raise ValueError(f"{n}, {k} and {t} must be positive integers")
@@ -35,16 +33,16 @@ class FORS:
       skADRS is used, that encodes the position of the FORS key pair within SPHINCS+ 
       and has tree height set to 0 and leaf index set to it + j:
     """
-    def for_SKgen(self, sk_seed: bytes, adrs: ADRS, index: int) -> List[bytes]:
+    def fors_SKgen(self, sk_seed: bytes, adrs: ADRS, index: int) -> bytes:
         # sk_seed is a byte string of length n.
         # adrs is the address of the leaf to be generated. The leaf index is derived from the input message.
         # the output is a list of k private keys, each of length n bytes.
-       skADRs = copy.copy(adrs)
+       skADRs = adrs.copy()
        skADRs.set_type(ADRSType.FORS_PRF)
        skADRs.set_key_pair_add(adrs.get_key_pair_add())
        skADRs.set_tree_height(0)
        skADRs.set_tree_index(index)
-       sk = PRF(sk_seed, skADRs)
+       sk = PRF(sk_seed, skADRs, self.n)
        return sk
     
     """
@@ -57,19 +55,20 @@ class FORS:
         if (s > 0xFFFFFFFF or z > 0xFFFFFFFF):
             raise ValueError(f"Values {s} or/and {z} exceeds 32 bit limit")
         
-        if (s % (1 <<z) != 0): return 1
+        if (s % (1 <<z) != 0): return -1;
         # list impl of stack
         stack = []
 
         for i in range(pow(2, z)):
-            sk = self.for_SKgen(sk_seed, adrs, s + i)
-            node = F(pk_seed, adrs, sk)
+            sk = self.fors_SKgen(sk_seed, adrs.copy(), s + i)
+            adrs.set_tree_height(0)
+            adrs.set_tree_index(s + i)
+            node = F(pk_seed, adrs.copy(), sk, self.n)
             adrs.set_tree_height(1)
             height = 1
-            adrs.set_tree_index(s + i)
             while stack and stack[-1][1] == height:
                 adrs.set_tree_index((adrs.get_tree_index() - 1) // 2)
-                node = hash_func(pk_seed, adrs, (stack.pop()[0] + node))
+                node = H(pk_seed, adrs.copy(), (stack.pop()[0]), node,  self.n)
                 height += 1
                 adrs.set_tree_height(height)
             # mimic stack push
@@ -82,7 +81,7 @@ class FORS:
     outptus a fors public key
     """
     def fors_PKgen(self, sk_seed: bytes, pk_seed: bytes, adrs: ADRS) -> bytes:
-        forspkADRS = copy.copy(adrs) # copy to create FTS public key address
+        forspkADRS = adrs.copy() # copy to create FTS public key address
         # roots just shows up. I'll assume its an empty list of k-byte strings considering
         # the for loop after it.
         root = [b""] * (self.k)
@@ -90,14 +89,14 @@ class FORS:
             root[i] = self.fors_treehash(sk_seed, i * self.t, self.a, pk_seed, adrs)
         forspkADRS.set_type(ADRSType.FORS_ROOTS)
         forspkADRS.set_key_pair_add (adrs.get_key_pair_add())
-        pk = T_len(pk_seed, forspkADRS, b"".join(root))
+        pk = T_len(pk_seed, forspkADRS, root, self.n)
         return pk
     
     def fors_sign(self, M: bytes, sk_seed: bytes, pk_seed: bytes, adrs: ADRS) -> FORS_sig:
-        sig_fors = []
+        sk_list = []
+        auth_list = []
         # to perform bit operations, we need it to be int.
         M_int = int.from_bytes(M, byteorder='big')
-        m_maxbits = len(M) * 8
         for i in range(self.k):
             # get next index (absolutely disgusting, need to double check this and test this)
             # ok, so we need to extract a certain number of bits from the message
@@ -105,49 +104,48 @@ class FORS:
             # self.a = log(t) btw.
             # so we get the lsb then mask that shi.
             # hopefully its correct.
-            idx = (M_int >> (m_maxbits - (i+1) * self.a)) & ((1 << self.a) - 1)
-            sk = self.for_SKgen(sk_seed, adrs, i * self.t + idx)
+            idx = (M_int >> (self.k - 1 - i) * self.a) % self.t
+            sk = self.fors_SKgen(sk_seed, adrs.copy(), i * self.t + idx)
             auth = [None] * self.a
             for j in range(self.a):
                 s = (idx // (1 << j)) ^ 1
-                auth[j] = self.fors_treehash(sk_seed, i * self.t + s * (1 << j), j, pk_seed, adrs)
-            sig_fors.append((sk, auth))
-        return FORS_sig(sig_fors)
+                auth[j] = self.fors_treehash(sk_seed, i * self.t + s * (1 << j), j, pk_seed, adrs.copy())
+            sk_list.append(sk)
+            auth_list.append(auth)
+        return FORS_sig(sk_list, auth_list)
     
     def fors_pkFromSig(self, SIG_FORS: FORS_sig, M: bytes, pk_seed: bytes, adrs: ADRS) -> bytes:
         M_int = int.from_bytes(M, byteorder='big')
-        m_maxbits = len(M) * 8
-
-        #same things here
         node = [b""] * 2
         root = [b""] * self.k
+        # compute from the roots.
         for i in range(self.k):
             # next index
-            idx = (M_int >> (m_maxbits - (i+1) * self.a)) & ((1 << self.a) - 1)
-
+            idx = (M_int >> (self.k - 1 - i) * self.a) % self.t
             # compute leaf
             sk = SIG_FORS.get_sk(i)
             adrs.set_tree_height(0)
-            adrs.set_tree_index(i* self.t + idx)
-            node[0] = F(pk_seed, adrs, sk)
+            adrs.set_tree_index((i* self.t) + idx)
+            node[0] = F(pk_seed, adrs.copy(), sk, self.n)
+            node[1] = 0
 
             # compute root from leaf to auth
             auth = SIG_FORS.get_auth(i)
-            adrs.set_tree_index(i * self.t + idx)
+            adrs.set_tree_index((i * self.t) + idx)
             for j in range(self.a):
                 adrs.set_tree_height(j + 1)
                 if (idx // (1 << j)) % 2 == 0:
                     adrs.set_tree_index((adrs.get_tree_index() // 2))
-                    node[1] = hash_func(pk_seed, adrs, node[0] + auth[j])
+                    node[1] = H(pk_seed, adrs.copy(), node[0], auth[j], self.n)
                 else:
                     adrs.set_tree_index((adrs.get_tree_index() - 1) // 2)
-                    node[1] = hash_func(pk_seed, adrs, auth[j] + node[0])
+                    node[1] = H(pk_seed, adrs.copy(), auth[j], node[0], self.n)
                 node[0] = node[1]
             root[i] = node[0]
-        forspkADRS = copy.copy(adrs) # copy to create FTS public key address
+        forspkADRS = adrs.copy() # copy to create FTS public key address
         forspkADRS.set_type(ADRSType.FORS_ROOTS)
         forspkADRS.set_key_pair_add (adrs.get_key_pair_add())
-        pk = T_len(pk_seed, forspkADRS, b"".join(root))
+        pk = T_len(pk_seed, forspkADRS, root, self.n)
         return pk
     
 

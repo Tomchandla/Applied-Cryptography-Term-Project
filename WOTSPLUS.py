@@ -1,70 +1,10 @@
+import copy
 import math
 import hashlib
 from dataclasses import dataclass
 from typing import List
-
-
-# ==============================
-# ADRS – address structure
-# ==============================
-
-class ADRS:
-    """
-    Placeholder for the 32-byte SPHINCS+ address structure (spec r3.1 §2.7.3).
-
-    Layout (8 × 32-bit words = 32 bytes):
-      word 0      : layer address
-      words 1-3   : tree address  (spec uses 3 words; simplified to 1 here)
-      word 4      : type
-      word 5      : key pair address
-      word 6      : chain address / tree height / padding
-      word 7      : hash address  / tree index  / padding
-
-    Per spec: setType() zeroes the subsequent three words.
-
-    TODO (integration): expand words 1-3 to the full 96-bit tree address
-    required by the SPHINCS+ hypertree (spec §2.7.3).
-    """
-
-    # Type constants (spec §2.7.3)
-    WOTS_HASH  = 0
-    WOTS_PK    = 1
-    TREE       = 2
-    FORS_TREE  = 3
-    FORS_ROOTS = 4
-    WOTS_PRF   = 5
-    FORS_PRF   = 6
-
-    def __init__(self):
-        self._words = [0] * 8  # 8 × 32-bit words
-
-    def copy(self) -> "ADRS":
-        a = ADRS()
-        a._words = self._words[:]
-        return a
-
-    # --- setters ---
-    def setLayerAddress(self, v: int):   self._words[0] = v
-    def setTreeAddress(self, v: int):    self._words[1] = v   # simplified: 1 word
-    def setType(self, v: int):
-        self._words[4] = v
-        self._words[5] = 0   # zero subsequent words per spec
-        self._words[6] = 0
-        self._words[7] = 0
-    def setKeyPairAddress(self, v: int): self._words[5] = v
-    def setChainAddress(self, v: int):   self._words[6] = v
-    def setHashAddress(self, v: int):    self._words[7] = v
-    def setTreeHeight(self, v: int):     self._words[6] = v
-    def setTreeIndex(self, v: int):      self._words[7] = v
-
-    # --- getters ---
-    def getKeyPairAddress(self) -> int:  return self._words[5]
-    def getTreeHeight(self) -> int:      return self._words[6]
-    def getTreeIndex(self) -> int:       return self._words[7]
-
-    def to_bytes(self) -> bytes:
-        return b"".join(w.to_bytes(4, "big") for w in self._words)
-
+from helpers import H, F, PRF, T_len
+from ADRS import ADRS, ADRSType
 
 # ==============================
 # SPHINCS+ parameter container
@@ -88,52 +28,6 @@ class SphincsParams:
         self.len2 = math.floor(math.log2(self.len1 * (self.w - 1)) / math.log2(self.w)) + 1
         # len  = len1 + len2
         self.len  = self.len1 + self.len2
-
-
-# ==============================
-# Placeholder cryptographic primitives
-# ==============================
-
-def PRF(SK_seed: bytes, ADRS_obj: ADRS, n: int) -> bytes:
-    """
-    Placeholder for PRF(SK.seed, ADRS) → n bytes (spec r3.1 §2.7.2).
-    TODO (integration): replace with the keyed PRF from the chosen
-    SPHINCS+ instantiation (SHA-2 or SHAKE).
-    """
-    h = hashlib.sha256()
-    h.update(SK_seed)
-    h.update(ADRS_obj.to_bytes())
-    return h.digest()[:n]
-
-
-def F(PK_seed: bytes, ADRS_obj: ADRS, M: bytes, n: int) -> bytes:
-    """
-    Placeholder for F(PK.seed, ADRS, M) → n bytes (spec r3.1 §2.7.1).
-    F is defined as T_1, the single-input tweakable hash function.
-    TODO (integration): replace with the tweakable hash F from the chosen
-    SPHINCS+ instantiation (SHA-2 or SHAKE).
-    """
-    h = hashlib.sha256()
-    h.update(PK_seed)
-    h.update(ADRS_obj.to_bytes())
-    h.update(M)
-    return h.digest()[:n]
-
-
-def T_len(PK_seed: bytes, ADRS_obj: ADRS, tmp: List[bytes], n: int) -> bytes:
-    """
-    Placeholder for T_l(PK.seed, ADRS, tmp) → n bytes (spec r3.1 §2.7.1).
-    Compresses len n-byte chain ends into a single n-byte public key value.
-    TODO (integration): replace with the tweakable hash T_l from the chosen
-    SPHINCS+ instantiation (SHA-2 or SHAKE).
-    """
-    h = hashlib.sha256()
-    h.update(PK_seed)
-    h.update(ADRS_obj.to_bytes())
-    for block in tmp:
-        h.update(block)
-    return h.digest()[:n]
-
 
 # ==============================
 # Utility: base_w  (spec r3.1 §2.5, Algorithm 1)
@@ -185,7 +79,7 @@ class WOTSPlus:
             raise ValueError("chain: i + s exceeds w - 1")
 
         tmp = self.chain(X, i, s - 1, PK_seed, ADRS_obj)
-        ADRS_obj.setHashAddress(i + s - 1)
+        ADRS_obj.set_hash_add(i + s - 1)
         tmp = F(PK_seed, ADRS_obj, tmp, n)
         return tmp
 
@@ -200,14 +94,14 @@ class WOTSPlus:
         """
         n = self.params.n
 
-        skADRS = ADRS_obj.copy()
-        skADRS.setType(ADRS.WOTS_PRF)
-        skADRS.setKeyPairAddress(ADRS_obj.getKeyPairAddress())
+        skADRS = copy.copy(ADRS_obj)
+        skADRS.set_type(ADRSType.WOTS_PRF)
+        skADRS.set_key_pair_add(ADRS_obj.get_key_pair_add())
 
         sk = []
         for i in range(self.params.len):
-            skADRS.setChainAddress(i)
-            skADRS.setHashAddress(0)
+            skADRS.set_chain_add(i)
+            skADRS.set_hash_add(0)
             sk.append(PRF(SK_seed, skADRS, n))
         return sk
 
@@ -227,21 +121,21 @@ class WOTSPlus:
 
         wotspkADRS = ADRS_obj.copy()
         skADRS     = ADRS_obj.copy()
-        skADRS.setType(ADRS.WOTS_PRF)
-        skADRS.setKeyPairAddress(ADRS_obj.getKeyPairAddress())
+        skADRS.set_type(ADRSType.WOTS_PRF)
+        skADRS.set_key_pair_add(ADRS_obj.get_key_pair_add())
 
         tmp = []
         for i in range(self.params.len):
-            skADRS.setChainAddress(i)
-            skADRS.setHashAddress(0)
+            skADRS.set_chain_add(i)
+            skADRS.set_hash_add(0)
             sk_i = PRF(SK_seed, skADRS, n)
 
-            ADRS_obj.setChainAddress(i)
-            ADRS_obj.setHashAddress(0)
+            ADRS_obj.set_chain_add(i)
+            ADRS_obj.set_hash_add(0)
             tmp.append(self.chain(sk_i, 0, w - 1, PK_seed, ADRS_obj))
 
-        wotspkADRS.setType(ADRS.WOTS_PK)
-        wotspkADRS.setKeyPairAddress(ADRS_obj.getKeyPairAddress())
+        wotspkADRS.set_type(ADRSType.WOTS_PK)
+        wotspkADRS.set_key_pair_add(ADRS_obj.get_key_pair_add())
         return T_len(PK_seed, wotspkADRS, tmp, n)
 
     # ------------------------------------------------------------------
@@ -257,7 +151,6 @@ class WOTSPlus:
         n   = self.params.n
         w   = self.params.w
         p   = self.params
-
         assert len(M) == n, "M must be n bytes"
 
         # convert message to base w
@@ -275,17 +168,17 @@ class WOTSPlus:
 
         # build signature
         skADRS = ADRS_obj.copy()
-        skADRS.setType(ADRS.WOTS_PRF)
-        skADRS.setKeyPairAddress(ADRS_obj.getKeyPairAddress())
+        skADRS.set_type(ADRSType.WOTS_PRF)
+        skADRS.set_key_pair_add(ADRS_obj.get_key_pair_add())
 
         sig = []
         for i in range(p.len):
-            skADRS.setChainAddress(i)
-            skADRS.setHashAddress(0)
+            skADRS.set_chain_add(i)
+            skADRS.set_hash_add(0)
             sk = PRF(SK_seed, skADRS, n)
 
-            ADRS_obj.setChainAddress(i)
-            ADRS_obj.setHashAddress(0)
+            ADRS_obj.set_chain_add(i)
+            ADRS_obj.set_hash_add(0)
             sig.append(self.chain(sk, 0, msg[i], PK_seed, ADRS_obj))
         return sig
 
@@ -323,11 +216,11 @@ class WOTSPlus:
 
         tmp = []
         for i in range(p.len):
-            ADRS_obj.setChainAddress(i)
+            ADRS_obj.set_chain_add(i)
             tmp.append(self.chain(sig[i], msg[i], w - 1 - msg[i], PK_seed, ADRS_obj))
 
-        wotspkADRS.setType(ADRS.WOTS_PK)
-        wotspkADRS.setKeyPairAddress(ADRS_obj.getKeyPairAddress())
+        wotspkADRS.set_type(ADRSType.WOTS_PK)
+        wotspkADRS.set_key_pair_add(ADRS_obj.get_key_pair_add())
         return T_len(PK_seed, wotspkADRS, tmp, n)
 
 
