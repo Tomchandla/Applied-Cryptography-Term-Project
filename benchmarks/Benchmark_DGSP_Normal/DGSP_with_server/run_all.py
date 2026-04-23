@@ -62,7 +62,7 @@ BASE_FIELDS = ["rank", "n", "w", "h", "d", "k", "t",
                "sig_bytes", "mean_ms", "median_ms", "min_ms", "max_ms", "stdev_ms"]
 
 EXTRA_FIELDS = {
-    "get_pk":   ["pk_bytes"],
+    "keygen":   ["pk_bytes"],
     "resp_m":   ["cert_size"],
     "judge":    ["sig_size", "pk_size"],
     "open":     ["sig_size", "pk_size"],
