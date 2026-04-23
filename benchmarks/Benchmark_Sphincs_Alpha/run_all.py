@@ -26,20 +26,21 @@ import bench_signing_alpha as bench_signing_alpha
 
 from sphincs.sphincs_Alpha import SphincsParamsAlpha
 # constraints
-MAX_SIG_BYTES = 20_000 # maximum signature size to consider, filter out anything with too large a sig, moddable.
+MAX_SIG_BYTES = 200_000 # maximum signature size to consider, filter out anything with too large a sig, moddable.
 
 # making it all ops to ease uses.
 # the 4 ops are the ones that need to be tested anyway
 # I think sig_size can technically be removed as other ops inadvertently test it
 # but making it its own operation does allow easier result analysis at the cost of a bit more time.
-ALL_OPS = ["keygen", "sign", "verify", "sig_size"]
+ALL_OPS = ["verify"]
 
 # par ranges
-N_VALS = [16, 32]
-W_VALS = [4, 16, 64, 256]
-H_VALS = [6, 10, 12]
-D_VALS = [2, 3]
-K_VALS = [4, 6, 8]
+N_VALS = [32]
+# I wanted a W value to be 256 like in other run_alls, but the proccessing power heavily stalls at that point.
+W_VALS = [16]
+H_VALS = [16]
+D_VALS = [8]
+K_VALS = [17]
 T_VALS = [8, 16, 32]
 
 # modifiable globals for the sweep
